@@ -48,7 +48,7 @@ jobs:
         shell: bash
         run: |
           agent-browser --version || true
-          agent-browser doctor --json || true
+          ( agent-browser doctor --json & DP=$!; ( sleep 30; kill -9 $DP 2>/dev/null ) & wait $DP ) || echo "[doctor capped/hangs on Windows #1461]"
 
       - name: Run scenario
         shell: bash
