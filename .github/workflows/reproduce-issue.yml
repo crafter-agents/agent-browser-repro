@@ -1,0 +1,62 @@
+name: reproduce-issue
+# Cross-platform agent-browser issue reproduction on REAL x86 hardware.
+# Trigger manually with the issue number, version, and OS matrix.
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "agent-browser version to pin (e.g. 0.32.3)"
+        required: true
+        default: "0.32.3"
+      scenario:
+        description: "scenario script under scenarios/ (e.g. 1506-chrome-exits)"
+        required: true
+
+jobs:
+  reproduce:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Environment (the 3 layers, logged)
+        shell: bash
+        run: |
+          echo "== OS =="
+          uname -a || ver
+          echo "== arch =="
+          echo "RUNNER_ARCH=$RUNNER_ARCH  RUNNER_OS=$RUNNER_OS"
+          echo "== bun =="
+          bun --version
+
+      - name: Install agent-browser (pinned)
+        shell: bash
+        run: |
+          bun add -g agent-browser@${{ github.event.inputs.version }}
+          echo "$HOME/.bun/bin" >> "$GITHUB_PATH"
+
+      - name: agent-browser version + doctor (environment capture)
+        shell: bash
+        run: |
+          agent-browser --version || true
+          agent-browser doctor --json || true
+
+      - name: Run scenario
+        shell: bash
+        run: |
+          bash "scenarios/${{ github.event.inputs.scenario }}.sh" 2>&1 | tee "repro-${{ matrix.os }}.log"
+
+      - name: Upload repro log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: repro-${{ matrix.os }}
+          path: repro-${{ matrix.os }}.log
