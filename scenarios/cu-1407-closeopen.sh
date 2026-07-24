@@ -1,35 +1,29 @@
 #!/bin/bash
-# #1407 EXACT repro: Windows PowerShell $output = & agent-browser open --headed,
-# then close, then open --headed AGAIN hangs. Version 0.27.0 (as reported).
+# #1407 v2: isolate the close->open hang. Use HEADLESS (default) not --headed,
+# since --headed hangs in CI without a display; test if the hang is about the
+# close->open SEQUENCE with output capture, independent of headed.
 set -uo pipefail
-[ "$RUNNER_OS" != "Windows" ] && { echo "SKIP: #1407 is Windows PowerShell only"; exit 0; }
+[ "$RUNNER_OS" != "Windows" ] && { echo "SKIP: Windows only"; exit 0; }
 export PATH="$HOME/.bun/bin:$PATH"
+echo "=== #1407 v2: close->open sequence with output capture (headless) ==="
 
-echo "=== #1407 exact repro on Windows (--headed + \$output capture) ==="
-
-# Run the EXACT reported sequence inside PowerShell, each step time-boxed via Job.
 powershell -NoProfile -Command '
 $ErrorActionPreference="SilentlyContinue"
-function TimedCapture([int]$secs,[string[]]$abargs){
+function TC([int]$secs,[string[]]$abargs){
   $j = Start-Job -ScriptBlock { param($a) $out = & agent-browser @a 2>&1; $out } -ArgumentList (,$abargs)
-  if(Wait-Job $j -Timeout $secs){ $r=Receive-Job $j; Remove-Job $j; return @{ok=$true} }
-  else { Stop-Job $j; Remove-Job $j -Force; return @{ok=$false} }
+  $done = Wait-Job $j -Timeout $secs
+  if($done){ Receive-Job $j | Out-Null; Remove-Job $j; return $true }
+  else { Stop-Job $j; Remove-Job $j -Force; return $false }
 }
-Write-Host "-- step 1: open --headed (capture) --"
-$s1 = TimedCapture 40 @("open","--headed","https://example.com"); Write-Host ("step1 returned: " + $s1.ok)
-Write-Host "-- step 2: close (capture) --"
-$s2 = TimedCapture 25 @("close"); Write-Host ("step2 returned: " + $s2.ok)
-Write-Host "-- step 3: open --headed AGAIN (capture) — #1407 says HANGS here --"
-$s3 = TimedCapture 40 @("open","--headed","https://example.com"); Write-Host ("step3 returned: " + $s3.ok)
-
-if($s1.ok -and $s2.ok -and (-not $s3.ok)){
-  Write-Host "CU-1407-REPRODUCED: second open --headed hung with output capture (steps 1,2 ok, 3 hung)"
-} elseif(-not $s3.ok){
-  Write-Host "CU-1407-PARTIAL: third step hung but earlier steps had issues too"
-} else {
-  Write-Host "CU-1407-NOT-REPRODUCED: all three returned"
-}
-& agent-browser close 2>&1 | Out-Null
-& agent-browser close 2>&1 | Out-Null
+# headless (no --headed) to avoid the CI-no-display hang; test the SEQUENCE
+Write-Host "step1 open:"      ($(TC 35 @("open","https://example.com")))
+Write-Host "step2 close:"     ($(TC 20 @("close")))
+Write-Host "step3 open-again:" ($(TC 35 @("open","https://example.com")))
+Write-Host "step4 close:"     ($(TC 20 @("close")))
+# Then the reported --headed variant, expected to hang on open in CI (documents the confound)
+Write-Host "--- headed variant (may hang in CI, no display) ---"
+Write-Host "headed-open:" ($(TC 30 @("open","--headed","https://example.com")))
+& agent-browser close --all 2>&1 | Out-Null
 '
-echo "=== done ==="
+echo "=== NOTE: headless sequence tests #1407 core (close->open); --headed needs a"
+echo "    real display which CI lacks, so headed hangs are a CI confound, not the bug. ==="
