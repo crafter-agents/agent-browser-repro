@@ -47,7 +47,8 @@ echo "fake-chrome built: $EXE"
 
 count_helpers() {
   if [ "$RUNNER_OS" = "Windows" ]; then
-    powershell -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match '$MARK' } | Measure-Object).Count" | tr -d '\r'
+    # exclude the querying powershell itself (its own CommandLine contains $MARK)
+    powershell -NoProfile -Command "(Get-CimInstance Win32_Process | Where-Object { \$_.CommandLine -match '$MARK' -and \$_.CommandLine -notmatch 'CimInstance' } | Measure-Object).Count" | tr -d '\r'
   else
     ps -ax -o command= 2>/dev/null | grep -F -- "$MARK" | grep -v grep | wc -l | tr -d ' '
   fi
@@ -61,22 +62,22 @@ count_zombies() {
 BASE_H=$(count_helpers); BASE_Z=$(count_zombies)
 echo "baseline: helpers=$BASE_H zombies=$BASE_Z"
 
-# Watchdog: the launcher self-times-out (~30s x3 attempts ~= 90s) then returns
-# Err. Guard anyway so a hung daemon can't eat the whole job budget.
-( sleep 200
-  if [ "$RUNNER_OS" = "Windows" ]; then
-    taskkill //F //IM agent-browser.exe 2>/dev/null || true
-  else
-    pkill -f "agent-browser" 2>/dev/null || true
-  fi
-) & WATCHDOG=$!
-
-echo "--- open via fake chrome (forces error path on ALL OSes) ---"
-agent-browser --executable-path "$EXE" open https://example.com 2>&1 | tee open.txt || true
+echo "--- open via fake chrome (bounded; forces error path on ALL OSes) ---"
+# On Windows the CLI does NOT self-timeout — it retries the daemon<->browser
+# connect (os error 10060) and hangs. Bound the foreground wait by PID (portable
+# across git-bash/unix); the daemon + any orphaned tree are left behind ON PURPOSE
+# so we can count them. That leftover tree IS the #1401 defect.
+agent-browser --executable-path "$EXE" open https://example.com >open.txt 2>&1 &
+OPID=$!
+for _ in $(seq 1 140); do kill -0 "$OPID" 2>/dev/null || break; sleep 1; done
+kill "$OPID" 2>/dev/null || true
+wait "$OPID" 2>/dev/null || true
+echo "[open output]"; cat open.txt 2>/dev/null || true
 
 echo "--- close --all (normal cleanup; cannot reach error-path orphans) ---"
-agent-browser close --all 2>&1 | tee close.txt || true
-kill "$WATCHDOG" 2>/dev/null || true
+( agent-browser close --all >close.txt 2>&1 & CPID=$!
+  for _ in $(seq 1 30); do kill -0 "$CPID" 2>/dev/null || break; sleep 1; done
+  kill "$CPID" 2>/dev/null || true ) || true
 sleep 3
 
 AFTER_H=$(count_helpers); AFTER_Z=$(count_zombies)
