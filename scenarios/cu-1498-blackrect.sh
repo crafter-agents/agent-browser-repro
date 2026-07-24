@@ -1,34 +1,43 @@
 #!/bin/bash
-# #1498 v2: black rectangle on Windows desktop, using ab-safe (no hang) + cu diff.
+# #1498 EXACT repro: --headless=new --window-size=1280,720 leaves a software-drawn
+# black rectangle visible in Windows screenshot capture. Uses cu capture + cu diff.
 set -uo pipefail
-[ "$RUNNER_OS" != "Windows" ] && { echo "SKIP: #1498 is Windows-desktop-visual only"; exit 0; }
-
+[ "$RUNNER_OS" != "Windows" ] && { echo "SKIP: #1498 Windows only"; exit 0; }
 git clone --depth 1 https://github.com/crafter-agents/cu.git _cu 2>/dev/null
-git clone --depth 1 https://github.com/crafter-agents/agent-browser-repro.git _abr 2>/dev/null || true
 CU="_cu/bin/cu"; chmod +x "$CU"
-# ab-safe from this same repo checkout
-AB_SAFE="_abr/lib/ab-safe.sh"; [ -f "$AB_SAFE" ] || AB_SAFE="lib/ab-safe.sh"
-chmod +x "$AB_SAFE" 2>/dev/null || true
 export PATH="$HOME/.bun/bin:$PATH"
-
-echo "=== #1498 via ab-safe + cu diff on Windows ==="
+echo "=== #1498 exact: --headless=new --window-size=1280,720 ==="
 
 $CU capture before.png && echo "before captured"
 
-# run a headless agent-browser session with ab-safe (caps + close --all, no hang)
-bash "$AB_SAFE" session https://example.com 2>&1 | tail -3
-echo "ab-safe session done (no hang)"
+# launch with the EXACT flags the reporter used, headless, leave it running
+echo "-- launching headless Chrome via agent-browser with reported flags --"
+( agent-browser open "https://example.com" --args "--headless=new,--window-size=1280,720" < /dev/null > ab.log 2>&1 & echo $! > ab.pid )
+sleep 10
+echo "agent-browser pid: $(cat ab.pid 2>/dev/null)"
 
+# capture WHILE the session is alive (rectangle appears during the session)
+$CU capture during.png && echo "during captured"
+
+echo "-- cu diff before vs during: did a rectangle appear? --"
+$CU diff before.png during.png 2>&1 | tail -2
+
+# kill the chrome tree (reporter: killing it removes the rectangle)
+powershell -NoProfile -Command "Get-Process | Where-Object { \$_.ProcessName -match 'chrome|agent-browser' } | Stop-Process -Force" 2>/dev/null || true
+agent-browser close --all 2>/dev/null || true
 sleep 2
-$CU capture after.png && echo "after captured"
+$CU capture after.png && echo "after captured (post-kill)"
 
-echo "--- cu diff: did a visual region change (the black rectangle)? ---"
-$CU diff before.png after.png 2>&1 | tail -2
+echo "-- cu diff during vs after: did killing remove the rectangle? --"
+$CU diff during.png after.png 2>&1 | tail -2
 
 echo "=== VERDICT ==="
-CHANGED=$($CU diff before.png after.png 2>/dev/null | grep -c CHANGED || true)
-if [ "${CHANGED:-0}" -gt 0 ]; then
-  echo "CU-1498-VISUAL-CHANGE: desktop changed after headless session (candidate black rectangle)"
+D1=$($CU diff before.png during.png 2>/dev/null | grep -c CHANGED || true)
+D2=$($CU diff during.png after.png 2>/dev/null | grep -c CHANGED || true)
+if [ "${D1:-0}" -gt 0 ] && [ "${D2:-0}" -gt 0 ]; then
+  echo "CU-1498-REPRODUCED: rectangle appeared during session AND vanished after kill (matches report)"
+elif [ "${D1:-0}" -gt 0 ]; then
+  echo "CU-1498-PARTIAL: something appeared during session (rectangle candidate)"
 else
-  echo "CU-1498-NO-CHANGE: no desktop change detected (rect may not appear on this runner/config)"
+  echo "CU-1498-NOT-REPRODUCED: no visual change with the reported flags"
 fi
