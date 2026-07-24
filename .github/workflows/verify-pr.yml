@@ -1,0 +1,97 @@
+name: verify-pr
+# Build agent-browser FROM A PULL REQUEST's source (refs/pull/N/head) on the real
+# Windows/Linux/macOS matrix and run the deterministic fix test + the #1401
+# end-to-end orphan/zombie scenario against the patched binary. Used to give an
+# independent CROSS-PLATFORM confirmation of a candidate fix (e.g. PR #1451 for
+# issue #1401), which so far only has a Linux/aarch64 confirmation.
+#
+# Read-only against vercel-labs/agent-browser: clone + fetch PR head, never push.
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "vercel-labs/agent-browser PR number to build from (e.g. 1451)"
+        required: true
+      test_filter:
+        description: "cargo test filter for the fix's regression test"
+        required: false
+        default: "native::cdp::chrome"
+      scenario:
+        description: "e2e scenario under scenarios/ to run against the built binary"
+        required: false
+        default: "1401-force-errorpath"
+
+jobs:
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repro harness (this repo, for scenarios/)
+        uses: actions/checkout@v4
+        with:
+          path: harness
+
+      - name: Checkout agent-browser at the PR head (read-only)
+        shell: bash
+        run: |
+          git clone --filter=blob:none https://github.com/vercel-labs/agent-browser.git ab
+          cd ab
+          git fetch origin "refs/pull/${{ github.event.inputs.pr }}/head:pr"
+          git checkout pr
+          echo "== building from =="; git log --oneline -1
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ab/cli
+
+      - name: Deterministic fix test (isolates the reap helper, no daemon)
+        shell: bash
+        working-directory: ab/cli
+        run: |
+          echo "== cargo test ${{ github.event.inputs.test_filter }} =="
+          set -o pipefail
+          cargo test ${{ github.event.inputs.test_filter }} -- --nocapture 2>&1 | tee "$GITHUB_WORKSPACE/test-${{ matrix.os }}.log"
+
+      - name: Build patched binary
+        shell: bash
+        working-directory: ab/cli
+        run: cargo build 2>&1 | tail -5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: E2E #1401 scenario against the PATCHED binary
+        shell: bash
+        run: |
+          BIN="$GITHUB_WORKSPACE/ab/cli/target/debug/agent-browser"
+          [ "$RUNNER_OS" = "Windows" ] && BIN="$BIN.exe"
+          "$BIN" --version || true
+          cd harness
+          # scenarios call `agent-browser` on PATH; shim it to the patched build
+          mkdir -p .bin
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            printf '@echo off\r\n"%s" %%*\r\n' "$BIN" > .bin/agent-browser.bat
+          else
+            printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$BIN" > .bin/agent-browser
+            chmod +x .bin/agent-browser
+          fi
+          export PATH="$PWD/.bin:$PATH"
+          echo "using: $(command -v agent-browser)"
+          bash "scenarios/${{ github.event.inputs.scenario }}.sh" 2>&1 | tee "$GITHUB_WORKSPACE/e2e-${{ matrix.os }}.log"
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-${{ matrix.os }}
+          path: |
+            test-${{ matrix.os }}.log
+            e2e-${{ matrix.os }}.log
+          if-no-files-found: warn
