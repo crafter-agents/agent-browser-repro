@@ -4,6 +4,7 @@
 # check for the phantom rectangle. Also record what windows exist, to distinguish
 # the bug's layered window from normal Chrome.
 set -uo pipefail
+AB_SAFE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/ab-safe.sh"
 [ "$RUNNER_OS" != "Windows" ] && { echo "SKIP"; exit 0; }
 git clone --depth 1 https://github.com/crafter-agents/cu.git _cu 2>/dev/null
 export PATH="$HOME/.bun/bin:$PATH"; CU="bun _cu/src/cli.ts"
@@ -19,7 +20,7 @@ echo "windows before:"; cat wins-before.txt
 # Pass args individually via env to dodge the comma-split bug (#1501).
 export AGENT_BROWSER_ARGS="--headless=new"
 echo "-- launch (AGENT_BROWSER_ARGS=--headless=new) --"
-( agent-browser open "https://example.com" < /dev/null > ab.log 2>&1 & echo $! > ab.pid )
+( "$AB_SAFE" raw open "https://example.com" < /dev/null > ab.log 2>&1 & echo $! > ab.pid )
 sleep 8
 
 # is Chrome actually headless? (no MainWindowTitle) and what windows appeared?
@@ -29,7 +30,7 @@ echo "windows during:"; cat wins-during.txt
 $CU capture during.png; echo "during: $(wc -c <during.png 2>/dev/null)B"
 
 powershell -NoProfile -Command "Get-Process chrome*,agent-browser* -ErrorAction SilentlyContinue | Stop-Process -Force" 2>/dev/null || true
-agent-browser close --all 2>/dev/null || true; sleep 2
+"$AB_SAFE" raw close --all 2>/dev/null || true; sleep 2
 $CU capture after.png; echo "after: $(wc -c <after.png 2>/dev/null)B"
 echo "=== new windows during vs before = the bug's phantom window candidate ==="
 diff wins-before.txt wins-during.txt || echo "(windows changed)"
