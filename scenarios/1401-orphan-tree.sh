@@ -12,6 +12,7 @@
 #                  (no zombies on Windows; children never signaled).
 #   Linux/macOS -> open SUCCEEDS, ChromeProcess+Drop clean up -> NO leak (CONTROL).
 set -uo pipefail
+AB_SAFE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/ab-safe.sh"
 
 cap() { local s="$1"; shift; "$@" & local p=$!; ( sleep "$s"; kill -9 "$p" 2>/dev/null ) & local w=$!; wait "$p" 2>/dev/null; local rc=$?; kill "$w" 2>/dev/null; return "$rc"; }
 
@@ -37,12 +38,12 @@ BASE_TREE=$(count_tree); BASE_Z=$(count_zombies)
 echo "baseline: tree=$BASE_TREE zombies=$BASE_Z"
 
 echo "--- forcing a launch (fails on Windows per #1506 -> error path) ---"
-cap 60 agent-browser open https://example.com 2>&1 | tee open.txt || true
+cap 60 "$AB_SAFE" raw open https://example.com 2>&1 | tee open.txt || true
 
 # Normal session cleanup. Error-path orphans are owned by NO session, so
 # close --all cannot reach them -- that is precisely the #1401 defect.
 echo "--- close --all (normal cleanup; cannot reap untracked orphans) ---"
-cap 25 agent-browser close --all 2>&1 | tee close.txt || true
+cap 25 "$AB_SAFE" raw close --all 2>&1 | tee close.txt || true
 sleep 3
 
 AFTER_TREE=$(count_tree); AFTER_Z=$(count_zombies)

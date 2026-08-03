@@ -15,6 +15,7 @@
 #   Windows            -> no zombies, but helper procs orphaned/alive
 #                         (missing group-kill) = the live tree from #1506's comments
 set -uo pipefail
+AB_SAFE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/lib/ab-safe.sh"
 MARK="ABREPRO1401H"
 
 echo "=== #1401 deterministic: forced launch error path ==="
@@ -67,7 +68,7 @@ echo "--- open via fake chrome (bounded; forces error path on ALL OSes) ---"
 # connect (os error 10060) and hangs. Bound the foreground wait by PID (portable
 # across git-bash/unix); the daemon + any orphaned tree are left behind ON PURPOSE
 # so we can count them. That leftover tree IS the #1401 defect.
-agent-browser --executable-path "$EXE" open https://example.com >open.txt 2>&1 &
+"$AB_SAFE" raw --executable-path "$EXE" open https://example.com >open.txt 2>&1 &
 OPID=$!
 for _ in $(seq 1 140); do kill -0 "$OPID" 2>/dev/null || break; sleep 1; done
 kill "$OPID" 2>/dev/null || true
@@ -75,7 +76,7 @@ wait "$OPID" 2>/dev/null || true
 echo "[open output]"; cat open.txt 2>/dev/null || true
 
 echo "--- close --all (normal cleanup; cannot reach error-path orphans) ---"
-( agent-browser close --all >close.txt 2>&1 & CPID=$!
+( "$AB_SAFE" raw close --all >close.txt 2>&1 & CPID=$!
   for _ in $(seq 1 30); do kill -0 "$CPID" 2>/dev/null || break; sleep 1; done
   kill "$CPID" 2>/dev/null || true ) || true
 sleep 3
